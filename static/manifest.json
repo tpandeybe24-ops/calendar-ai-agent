@@ -1,0 +1,21 @@
+{
+  "name": "Calendar Alarms",
+  "short_name": "Alarms",
+  "start_url": "/alarm",
+  "display": "standalone",
+  "background_color": "#f5f5f5",
+  "theme_color": "#007AFF",
+  "description": "Get alerted before your Google Calendar events",
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

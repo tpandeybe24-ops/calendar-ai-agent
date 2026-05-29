@@ -1,0 +1,13 @@
+token.pkl
+credentials.json
+calendaralarm-eb0f7-bd033cdcaa99.json
+sent_reminders.json
+users.json
+__pycache__/
+*.pyc
+.env
+vapid_private.pem
+vapid_public.pem
+ngrok
+CalendarAlarm/
+ngrok.exe

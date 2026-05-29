@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="theme-color" content="#007AFF"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+  <meta name="apple-mobile-web-app-title" content="Calendar Alarms"/>
+  <title>Calendar Alarms</title>
+  <link rel="manifest" href="/static/manifest.json"/>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family: -apple-system, sans-serif;
+      background: #f5f5f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      gap: 20px;
+    }
+    h1 { font-size: 22px; font-weight: 700; color: #111; }
+    #status-card {
+      background: white;
+      border-radius: 16px;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 360px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      text-align: center;
+    }
+    #status-icon { font-size: 48px; margin-bottom: 12px; }
+    #status-text { font-size: 15px; color: #444; line-height: 1.5; }
+    #tick { font-size: 12px; color: #999; margin-top: 6px; }
+    .big-btn {
+      width: 100%;
+      max-width: 360px;
+      padding: 16px;
+      border-radius: 14px;
+      border: none;
+      font-size: 17px;
+      font-weight: 600;
+      cursor: pointer;
+      background: #007AFF;
+      color: white;
+    }
+    .big-btn:disabled { background: #ccc; }
+
+    #overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+    }
+    #modal {
+      background: white;
+      border-radius: 24px;
+      padding: 2.5rem 1.5rem;
+      width: 90%;
+      max-width: 340px;
+      text-align: center;
+    }
+    #bell-icon {
+      font-size: 64px;
+      display: block;
+      margin-bottom: 1rem;
+      animation: pulse 0.8s infinite;
+    }
+    @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.18)} }
+    #alarm-badge {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: #ff3b30;
+      background: #fff0ee;
+      padding: 4px 12px;
+      border-radius: 20px;
+      display: inline-block;
+      margin-bottom: 12px;
+    }
+    #alarm-title { font-size: 22px; font-weight: 700; color: #111; margin-bottom: 6px; }
+    #alarm-time { font-size: 14px; color: #666; margin-bottom: 2rem; }
+    .alarm-btn {
+      width: 100%;
+      padding: 15px;
+      border-radius: 14px;
+      border: none;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 10px;
+    }
+    #btn-dismiss { background: #f0f0f0; color: #111; }
+    #btn-cancel { background: #fff0f0; color: #cc0000; }
+  </style>
+</head>
+<body>
+
+  <h1>🔔 Calendar Alarms</h1>
+
+  <div id="status-card">
+    <div id="status-icon">⏳</div>
+    <div id="status-text">Setting up...</div>
+    <div id="tick"></div>
+  </div>
+
+  <button class="big-btn" id="enable-btn" onclick="enablePush()" style="display:none;">
+    Enable Push Notifications
+  </button>
+
+  <div id="overlay">
+    <div id="modal">
+      <span id="bell-icon">🔔</span>
+      <div id="alarm-badge">5 minutes away</div>
+      <p id="alarm-title">Meeting</p>
+      <p id="alarm-time">starts at 3:00 PM</p>
+      <button class="alarm-btn" id="btn-dismiss" onclick="dismiss()">Dismiss</button>
+      <button class="alarm-btn" id="btn-cancel" onclick="cancelAll()">Don't remind me again</button>
+    </div>
+  </div>
+ 
+<script>
+const VAPID_PUBLIC_KEY = 'BCz177YmjMZuWNmnZUIEb83-34i63U6MLzEVBpVrdMkQR3H4u44vG82s7yPtmkGEBjgLF7e568JyNsl2soR-b0Y';
+let cancelled = new Set();
+let currentId = null;
+let alarmOn = false;
+let audioCtx = null;
+let beepInterval = null;
+let vibInterval = null;
+let tickTimer = null;
+let secs = 30;
+let swReg = null;
+
+function setStatus(icon, text) {
+  document.getElementById('status-icon').textContent = icon;
+  document.getElementById('status-text').textContent = text;
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+async function init() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    setStatus('❌', 'Push notifications not supported on this browser. Use Chrome on Android.');
+    return;
+  }
+
+  try {
+    swReg = await navigator.serviceWorker.register('/static/sw.js');
+    setStatus('✅', 'Service worker ready.');
+
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      setStatus('🚫', 'Please allow notifications to receive alarms.');
+      document.getElementById('enable-btn').style.display = 'block';
+      return;
+    }
+
+    await subscribeToPush();
+    startPolling();
+  } catch (err) {
+    setStatus('❌', 'Setup failed: ' + err.message);
+  }
+}
+
+async function enablePush() {
+  const permission = await Notification.requestPermission();
+  if (permission === 'granted') {
+    await subscribeToPush();
+    startPolling();
+    document.getElementById('enable-btn').style.display = 'none';
+  }
+}
+
+async function subscribeToPush() {
+  try {
+    const sub = await swReg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+    });
+
+    await fetch('/api/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sub)
+    });
+
+    setStatus('🔔', 'Alarms active! You\'ll get notified even when this app is closed.');
+  } catch (err) {
+    setStatus('⚠️', 'Push setup failed, falling back to in-app alerts.');
+    startPolling();
+  }
+}
+
+function beep() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.connect(g); g.connect(audioCtx.destination);
+  o.type = 'sine';
+  const t = audioCtx.currentTime;
+  o.frequency.setValueAtTime(880, t);
+  o.frequency.setValueAtTime(660, t + 0.2);
+  g.gain.setValueAtTime(0.5, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+  o.start(t); o.stop(t + 0.6);
+}
+
+function showAlarm(id, title, time, mins) {
+  if (cancelled.has(id)) return;
+  currentId = id;
+  alarmOn = true;
+  document.getElementById('alarm-title').textContent = title;
+  document.getElementById('alarm-time').textContent = 'starts at ' + time;
+  document.getElementById('alarm-badge').textContent = mins + ' minutes away';
+  document.getElementById('overlay').style.display = 'flex';
+
+  beep();
+  beepInterval = setInterval(() => { if (alarmOn) beep(); else clearInterval(beepInterval); }, 900);
+
+  if (navigator.vibrate) {
+    navigator.vibrate([500, 200, 500]);
+    vibInterval = setInterval(() => {
+      if (alarmOn) navigator.vibrate([500, 200, 500]);
+      else clearInterval(vibInterval);
+    }, 2000);
+  }
+}
+
+function dismiss() {
+  alarmOn = false;
+  clearInterval(beepInterval);
+  clearInterval(vibInterval);
+  if (navigator.vibrate) navigator.vibrate(0);
+  document.getElementById('overlay').style.display = 'none';
+}
+
+function cancelAll() {
+  alarmOn = false;
+  clearInterval(beepInterval);
+  clearInterval(vibInterval);
+  if (navigator.vibrate) navigator.vibrate(0);
+  if (currentId) {
+    cancelled.add(currentId);
+    fetch('/api/cancel-reminders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_id: currentId })
+    });
+  }
+  document.getElementById('overlay').style.display = 'none';
+}
+
+function poll() {
+  fetch('/api/due-reminders')
+    .then(r => r.json())
+    .then(data => {
+      (data.reminders || []).forEach(r => {
+        if (!cancelled.has(r.event_id)) {
+          showAlarm(r.event_id, r.title, r.time, r.minutes_before);
+        }
+      });
+    })
+    .catch(() => {});
+}
+
+function startPolling() {
+  poll();
+  secs = 30;
+  clearInterval(tickTimer);
+  tickTimer = setInterval(() => {
+    secs--;
+    document.getElementById('tick').textContent = 'checking in ' + secs + 's';
+    if (secs <= 0) { secs = 30; poll(); }
+  }, 1000);
+}
+
+init();
+</script>
+</body>
+</html>
