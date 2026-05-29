@@ -27,16 +27,16 @@ def home():
 
 
 @app.get("/login")
-def login(request: Request):
+def login(request: Request, fcm_token: str = ""):
     redirect_uri = f"{BASE_URL}/auth/callback"
-    auth_url = get_auth_url(redirect_uri)
+    auth_url = get_auth_url(redirect_uri, fcm_token)
     return RedirectResponse(auth_url)
 
 
 @app.get("/auth/callback")
-def auth_callback(code: str, request: Request):
+def auth_callback(code: str, state: str = "", request: Request = None):
     redirect_uri = f"{BASE_URL}/auth/callback"
-    email = fetch_and_save_user(code, redirect_uri)
+    email = fetch_and_save_user(code, redirect_uri, fcm_token=state)
     return HTMLResponse(f"""
         <html>
         <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #1a1a2e; color: white;">

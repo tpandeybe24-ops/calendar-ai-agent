@@ -34,16 +34,17 @@ def make_flow(redirect_uri):
     )
 
 
-def get_auth_url(redirect_uri):
+def get_auth_url(redirect_uri, fcm_token=""):
     flow = make_flow(redirect_uri)
     auth_url, state = flow.authorization_url(
         access_type='offline',
-        prompt='consent'
+        prompt='consent',
+        state=fcm_token
     )
     return auth_url
 
 
-def fetch_and_save_user(code, redirect_uri):
+def fetch_and_save_user(code, redirect_uri, fcm_token=""):
     flow = make_flow(redirect_uri)
     flow.fetch_token(code=code)
     credentials = flow.credentials
@@ -56,7 +57,7 @@ def fetch_and_save_user(code, redirect_uri):
     users[email] = {
         "email": email,
         "token": pickle.dumps(credentials).hex(),
-        "fcm_token": users.get(email, {}).get("fcm_token", None)
+        "fcm_token": fcm_token if fcm_token else users.get(email, {}).get("fcm_token", None)
     }
     save_users(users)
 
