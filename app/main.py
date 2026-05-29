@@ -1,14 +1,14 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse, FileResponse
+from fastapi.responses import RedirectResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
-from app.auth.auth_service import get_auth_url, fetch_calendar_events
-from app.notifications.reminder_engine import check_upcoming_events
+from app.auth.auth_service import get_auth_url, fetch_and_save_user, save_fcm_token
 from app.scheduler.scheduler_service import start_scheduler, scheduler, get_due_reminders, cancel_event, set_push_subscriptions
+import os
 
 push_subscriptions = []
-cancelled_events = set()
 
+BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -23,36 +23,39 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 def home():
-    return {"message": "my ai agent is alive"}
+    return FileResponse("static/index.html")
 
 
 @app.get("/login")
-def login():
-    auth_url = get_auth_url()
+def login(request: Request):
+    redirect_uri = f"{BASE_URL}/auth/callback"
+    auth_url = get_auth_url(redirect_uri)
     return RedirectResponse(auth_url)
 
 
 @app.get("/auth/callback")
-def auth_callback(code: str):
-    events = fetch_calendar_events(code)
-    cleaned_events = []
-    for event in events:
-        cleaned_events.append({
-            "title": event.get("summary"),
-            "start": event.get("start"),
-            "end": event.get("end")
-        })
-    return {
-        "message": "Google login successful",
-        "events": cleaned_events
-    }
+def auth_callback(code: str, request: Request):
+    redirect_uri = f"{BASE_URL}/auth/callback"
+    email = fetch_and_save_user(code, redirect_uri)
+    return HTMLResponse(f"""
+        <html>
+        <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #1a1a2e; color: white;">
+            <h1>✅ Logged in as {email}</h1>
+            <p>Your calendar is now synced!</p>
+            <p>You will receive alarm notifications for your events.</p>
+            <p>You can close this tab now.</p>
+        </body>
+        </html>
+    """)
 
 
-@app.get("/check-reminders")
-def reminders(code: str):
-    events = fetch_calendar_events(code)
-    upcoming = check_upcoming_events(events)
-    return {"upcoming_events": upcoming}
+@app.post("/api/register-fcm")
+async def register_fcm(request: Request):
+    data = await request.json()
+    email = data.get("email")
+    fcm_token = data.get("fcm_token")
+    success = save_fcm_token(email, fcm_token)
+    return {"ok": success}
 
 
 @app.get("/api/due-reminders")
