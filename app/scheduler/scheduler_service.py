@@ -11,6 +11,7 @@ import google.auth.transport.requests
 from google.oauth2 import service_account
 
 from app.notifications.reminder_service import send_notification
+from app.auth.auth_service import load_users
 
 scheduler = BackgroundScheduler()
 
@@ -21,7 +22,6 @@ SENT_FILE = "sent_reminders.json"
 VAPID_PRIVATE_KEY = "vapid_private.pem"
 VAPID_EMAIL = "mailto:your@email.com"
 
-FCM_DEVICE_TOKEN = "cFkIXitDRXysCXFDXwisFm:APA91bFBVCqQzRBy_rFex37jm3Ye4Igur4Xnp-WNu45aWfdHFZbQt22lfF80PqjwfbxptQuqp8LkyZbyV82r9gvylVbNtR0wzAKBvBuoQf_ugzEDbcc7Pbo"
 SERVICE_ACCOUNT_FILE = "calendaralarm-eb0f7-bd033cdcaa99.json"
 FCM_PROJECT_ID = "calendaralarm-eb0f7"
 
@@ -45,12 +45,6 @@ def load_sent() -> set:
 def save_sent(sent: set):
     with open(SENT_FILE, "w") as f:
         json.dump(list(sent), f)
-
-
-def get_calendar_service():
-    with open("token.pkl", "rb") as token:
-        credentials = pickle.load(token)
-    return build("calendar", "v3", credentials=credentials)
 
 
 def get_due_reminders():
@@ -77,7 +71,7 @@ def send_push(title: str, body: str):
             print(f"  Push failed: {e}")
 
 
-def send_fcm_notification(title: str, body: str):
+def send_fcm_notification(title: str, body: str, fcm_token: str):
     try:
         credentials = service_account.Credentials.from_service_account_file(
             SERVICE_ACCOUNT_FILE,
@@ -94,7 +88,7 @@ def send_fcm_notification(title: str, body: str):
             },
             json={
                 "message": {
-                    "token": FCM_DEVICE_TOKEN,
+                    "token": fcm_token,
                     "data": {"title": title, "body": body}
                 }
             }
@@ -108,80 +102,81 @@ def check_events():
     global _due_reminders
     print("Checking upcoming events...")
 
-    service = get_calendar_service()
-    now = datetime.now(timezone.utc).isoformat()
+    users = load_users()
+    if not users:
+        print("No users registered yet.")
+        return
 
-    events_result = service.events().list(
-        calendarId="primary",
-        timeMin=now,
-        maxResults=10,
-        singleEvents=True,
-        orderBy="startTime"
-    ).execute()
-
-    events = events_result.get("items", [])
-    current_time = datetime.now(timezone.utc)
     already_sent = load_sent()
     changed = False
+    current_time = datetime.now(timezone.utc)
 
-    print(f"Found {len(events)} events")
+    for email, user_data in users.items():
+        print(f"Checking calendar for {email}")
+        try:
+            credentials = pickle.loads(bytes.fromhex(user_data["token"]))
+            service = build("calendar", "v3", credentials=credentials)
 
-    for event in events:
-        title = event.get("summary", "Untitled Event")
-        start = event["start"].get("dateTime", event["start"].get("date"))
+            now = datetime.now(timezone.utc).isoformat()
+            events_result = service.events().list(
+                calendarId="primary",
+                timeMin=now,
+                maxResults=10,
+                singleEvents=True,
+                orderBy="startTime"
+            ).execute()
 
-        if "T" not in start:
-            print(f"  Skipping all-day event: {title}")
-            continue
+            events = events_result.get("items", [])
+            print(f"  Found {len(events)} events")
 
-        event_time = datetime.fromisoformat(
-            start.replace("Z", "+00:00")
-        ).astimezone(timezone.utc)
+            for event in events:
+                title = event.get("summary", "Untitled Event")
+                start = event["start"].get("dateTime", event["start"].get("date"))
 
-        minutes_until = round((event_time - current_time).total_seconds() / 60)
-        print(f"Event: {title} — {minutes_until} mins away")
+                if "T" not in start:
+                    continue
 
-        for reminder_minute in REMINDER_MINUTES:
-            reminder_id = (
-                f"{title}-"
-                f"{event_time.strftime('%Y-%m-%d-%H-%M')}-"
-                f"{reminder_minute}"
-            )
+                event_time = datetime.fromisoformat(
+                    start.replace("Z", "+00:00")
+                ).astimezone(timezone.utc)
 
-            target_time = event_time - timedelta(minutes=reminder_minute)
-            seconds_from_target = abs((current_time - target_time).total_seconds())
+                minutes_until = round((event_time - current_time).total_seconds() / 60)
+                print(f"  Event: {title} — {minutes_until} mins away")
 
-            print(f"  checking {reminder_minute} min reminder — {round(seconds_from_target)}s from target — already sent: {reminder_id in already_sent}")
+                for reminder_minute in REMINDER_MINUTES:
+                    reminder_id = f"{email}-{title}-{event_time.strftime('%Y-%m-%d-%H-%M')}-{reminder_minute}"
+                    target_time = event_time - timedelta(minutes=reminder_minute)
+                    seconds_from_target = abs((current_time - target_time).total_seconds())
 
-            if reminder_id in already_sent:
-                continue
+                    if reminder_id in already_sent:
+                        continue
+                    if reminder_id in cancelled_events:
+                        continue
 
-            if reminder_id in cancelled_events:
-                continue
+                    if seconds_from_target <= TRIGGER_WINDOW_SECONDS:
+                        msg_title = "Calendar Reminder"
+                        msg_body = f"{title} starts in {reminder_minute} minutes!"
 
-            if seconds_from_target <= TRIGGER_WINDOW_SECONDS:
-                send_notification(
-                    "Calendar Reminder",
-                    f"{title} starts in {reminder_minute} minutes!"
-                )
-                send_push(
-                    "Calendar Reminder",
-                    f"{title} starts in {reminder_minute} minutes!"
-                )
-                send_fcm_notification(
-                    "Calendar Reminder",
-                    f"{title} starts in {reminder_minute} minutes!"
-                )
-                print(f"  Reminder sent for {title} ({reminder_minute} mins)")
-                already_sent.add(reminder_id)
-                changed = True
+                        send_notification(msg_title, msg_body)
+                        send_push(msg_title, msg_body)
 
-                _due_reminders.append({
-                    "event_id": reminder_id,
-                    "title": title,
-                    "time": event_time.astimezone().strftime("%I:%M %p"),
-                    "minutes_before": reminder_minute
-                })
+                        fcm_token = user_data.get("fcm_token")
+                        if fcm_token:
+                            send_fcm_notification(msg_title, msg_body, fcm_token)
+
+                        print(f"  Reminder sent for {title} ({reminder_minute} mins) to {email}")
+                        already_sent.add(reminder_id)
+                        changed = True
+
+                        _due_reminders.append({
+                            "event_id": reminder_id,
+                            "title": title,
+                            "time": event_time.astimezone().strftime("%I:%M %p"),
+                            "minutes_before": reminder_minute
+                        })
+
+        except Exception as e:
+            print(f"  Error checking calendar for {email}: {e}")
 
     if changed:
         save_sent(already_sent)
@@ -190,3 +185,4 @@ def check_events():
 def start_scheduler():
     scheduler.add_job(check_events, "cron", second=0)
     scheduler.start()
+    

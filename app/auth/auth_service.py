@@ -12,6 +12,7 @@ SCOPES = [
 ]
 
 USERS_FILE = "users.json"
+_flow_store = {}
 
 
 def load_users():
@@ -41,11 +42,16 @@ def get_auth_url(redirect_uri, fcm_token=""):
         prompt='consent',
         state=fcm_token
     )
+    _flow_store[state] = flow  # save flow so we can reuse it
     return auth_url
 
 
 def fetch_and_save_user(code, redirect_uri, fcm_token=""):
-    flow = make_flow(redirect_uri)
+    # Reuse the same flow that generated the auth URL
+    flow = _flow_store.pop(fcm_token, None)
+    if flow is None:
+        flow = make_flow(redirect_uri)
+
     flow.fetch_token(code=code)
     credentials = flow.credentials
 
