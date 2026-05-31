@@ -8,7 +8,7 @@ import os
 
 push_subscriptions = []
 
-BASE_URL = os.getenv("BASE_URL", "https://webmasters-gilbert-indicators-pmc.trycloudflare.com")
+BASE_URL = os.getenv("BASE_URL", "https://sacramento-guards-accountability-dear.trycloudflare.com")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
